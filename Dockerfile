@@ -18,5 +18,5 @@ COPY . .
 # Создание папки для временных файлов
 RUN mkdir -p tmp
 
-# Запуск FastAPI-сервера и Telegram-бота
+# Запуск FastAPI-сервера и Telegram-бота параллельно
 CMD uvicorn server:app --host 0.0.0.0 --port $PORT & python bot.py
