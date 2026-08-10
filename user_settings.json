@@ -1,0 +1,23 @@
+{
+  "12345": {
+    "preset": "neon",
+    "font_size": "large",
+    "font": "ExampleFont.ttf"
+  },
+  "582688756": {
+    "preset": "luca",
+    "font": null,
+    "font_size": "2.8cqh",
+    "primary_color": "#FFFFFF",
+    "secondary_color": "#C9D1E4",
+    "outline_color": "#111827",
+    "back_color": "#111827",
+    "outline": 2,
+    "shadow": 0,
+    "border_style": 1,
+    "alignment": 2,
+    "margin_v": 140,
+    "v_offset": 0.5,
+    "h_align": "center"
+  }
+}
