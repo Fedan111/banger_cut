@@ -3,12 +3,15 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from aiogram import types
 
+import db
 from bot import bot, dp, process_queue_worker
 
 logging.basicConfig(level=logging.INFO)
@@ -36,10 +39,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Монтируем папку web для статических файлов (CSS/JS/изображения)
 WEB_DIR = BASE_DIR / "web"
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+class UpdateSessionRequest(BaseModel):
+    words: list[Dict[str, Any]]
+    keep_segments: list[Dict[str, Any]]
 
 
 @app.get("/")
@@ -50,13 +57,56 @@ async def root():
 
 @app.get("/editor", response_class=HTMLResponse)
 async def serve_editor():
-    """Отдаёт Mini App из папки web/index.html."""
+    """Отдаёт Telegram Mini App."""
     html_path = WEB_DIR / "index.html"
-
     if html_path.exists():
         return FileResponse(html_path)
-
     return HTMLResponse("<h3>Ошибка: Файл web/index.html не найден на сервере.</h3>", status_code=404)
+
+
+@app.get("/api/session/{session_id}")
+async def get_session_api(session_id: str):
+    """Возвращает данные сессии из Supabase для Mini App."""
+    try:
+        session = db.get_session(session_id) if hasattr(db, "get_session") else None
+        if not session and hasattr(db, "supabase"):
+            res = db.supabase.table("sessions").select("*").eq("id", session_id).execute()
+            if res.data:
+                session = res.data[0]
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Сессия не найдена")
+
+        return {
+            "status": "ok",
+            "session": session
+        }
+    except Exception as e:
+        logging.error("Ошибка при получении сессии %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/session/{session_id}")
+async def update_session_api(session_id: str, payload: UpdateSessionRequest):
+    """Сохраняет отредактированный транскрипт в Supabase."""
+    try:
+        if hasattr(db, "update_session"):
+            db.update_session(session_id, {
+                "transcript": payload.words,
+                "keep_segments": payload.keep_segments,
+                "status": "edited"
+            })
+        elif hasattr(db, "supabase"):
+            db.supabase.table("sessions").update({
+                "transcript": payload.words,
+                "keep_segments": payload.keep_segments,
+                "status": "edited"
+            }).eq("id", session_id).execute()
+
+        return {"status": "ok", "message": "Сессия успешно обновлена"}
+    except Exception as e:
+        logging.error("Ошибка при обновлении сессии %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post(WEBHOOK_PATH)
