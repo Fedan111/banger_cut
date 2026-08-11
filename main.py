@@ -17,11 +17,11 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # При старте приложения принудительно устанавливаем вебхук в Telegram
+    # При старте принудительно регистрируем вебхук
     logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
     await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
     yield
-    # delete_webhook() убран, чтобы при ротации контейнеров адрес не сбрасывался в Telegram
+    # Никаких действий при завершении — вызов delete_webhook удалён!
 
 
 app = FastAPI(lifespan=lifespan)
