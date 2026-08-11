@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List
 
 try:
@@ -16,7 +17,7 @@ logging.basicConfig(
 SYSTEM_PROMPT = (
     "Ты — профессиональный видеомонтажер. Твоя задача — удалить паузы, повторы, оговорки и мусор, "
     "оставив только лучшие и логичные фрагменты речи. Верни только JSON-массив объектов вида "
-    "[{\"start\": float, \"end\": float}]."
+    '[{"start": float, "end": float}].'
 )
 
 
@@ -46,6 +47,14 @@ def _normalize_whisper_data(whisper_data: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
     return {"words": normalized}
+
+
+def _extract_json_array(text: str) -> str:
+    """Извлекает JSON-массив из ответа LLM, даже если он обёрнут в ```json ... ```."""
+    match = re.search(r"\[.*\]", text.strip(), re.DOTALL)
+    if match:
+        return match.group(0)
+    return text.strip()
 
 
 def _validate_segments(raw_segments: Any) -> List[Dict[str, float]]:
@@ -88,8 +97,10 @@ def get_cut_plan(whisper_data: Dict[str, Any], api_key: str) -> List[Dict[str, f
     if not content:
         raise ValueError("Groq returned an empty response")
 
+    json_str = _extract_json_array(content)
+
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(json_str)
     except json.JSONDecodeError as exc:
         logger.error("Failed to decode Groq JSON response: %s", content)
         raise ValueError("Groq returned invalid JSON") from exc
