@@ -2,37 +2,41 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from aiogram import Bot, Dispatcher, types
+from aiogram import types
 
-# Импортируйте вашего диспетчера/хэндлеры из старого файла (например, из bot.py),
-# либо переносите логику сюда.
+# Импортируем настроенные bot и dp со всеми зарегистрированными хэндлерами из bot.py
+from bot import bot, dp
 
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
+# Формируем URL вебхука
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()  # Или используйте ваш существующий dp
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Установка вебхука при старте
+    # При старте приложения регистрируем вебхук в Telegram
+    logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
     await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
     yield
-    # Удаление вебхука при остановке
+    # При остановке приложения удаляем вебхук
+    logging.info("Удаление вебхука")
     await bot.delete_webhook()
+
 
 app = FastAPI(lifespan=lifespan)
 
-# Корневой эндпоинт (Health Check для Render и проверка в браузере)
+
+# Корневые эндпоинты для проверки работоспособности (Health Check Render)
 @app.get("/")
 @app.head("/")
 async def root():
     return {"status": "ok", "bot": "Banger Cut"}
+
 
 # Эндпоинт приема обновлений от Telegram
 @app.post(WEBHOOK_PATH)
