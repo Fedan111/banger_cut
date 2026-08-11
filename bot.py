@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,15 +11,14 @@ from typing import Any, Dict, List, Optional, Union
 from aiogram import Bot, Dispatcher, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import ContentType, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import ContentType, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from dotenv import load_dotenv
 
 import db
 from llm_cutter import get_cut_plan
 from preset_templates import PRESET_TEMPLATES
-from subtitle_generator import generate_tscaps_transcript
 from transcriber import transcribe_audio
-from video_processor import probe_media_duration, render_final_video
+from video_processor import probe_media_duration
 
 load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
 
@@ -26,7 +26,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
 TMP_ROOT = Path("tmp")
-
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
@@ -38,20 +37,19 @@ logging.basicConfig(
 bot = Bot(token=BOT_TOKEN) if not BOT_TOKEN.startswith("YOUR_") else None
 dp = Dispatcher()
 
+# Очередь для фоновой обработки видео
+video_queue: asyncio.Queue = asyncio.Queue()
+
 
 def get_all_presets() -> Dict[str, Dict[str, str]]:
-    """Собирает список пресетов из PRESET_TEMPLATES и сканирует папку templates/."""
     presets = dict(PRESET_TEMPLATES)
     templates_dir = Path(__file__).parent / "templates"
-
     if templates_dir.exists():
         for folder in templates_dir.iterdir():
             if folder.is_dir() and not folder.name.startswith("."):
                 preset_key = folder.name
                 if preset_key not in presets:
-                    title = preset_key.replace("_", " ").title()
-                    presets[preset_key] = {"name": title}
-
+                    presets[preset_key] = {"name": preset_key.replace("_", " ").title()}
     return presets
 
 
@@ -75,58 +73,39 @@ def build_settings_keyboard(chat_id: Union[int, str]) -> InlineKeyboardMarkup:
 
     rows: List[List[InlineKeyboardButton]] = []
 
-    # Секция 1: Пресеты (по 2 в ряд)
     preset_buttons: List[InlineKeyboardButton] = []
     for preset_key, tmpl in all_presets.items():
-        is_active = current_preset == preset_key
-        prefix = "✅ " if is_active else ""
+        prefix = "✅ " if current_preset == preset_key else ""
         label = f"{prefix}{tmpl.get('name', preset_key)}"
-        preset_buttons.append(
-            InlineKeyboardButton(text=label, callback_data=f"preset:{preset_key}")
-        )
+        preset_buttons.append(InlineKeyboardButton(text=label, callback_data=f"preset:{preset_key}"))
     rows.extend([preset_buttons[i : i + 2] for i in range(0, len(preset_buttons), 2)])
 
-    # Секция 2: Позиция по вертикали
     rows.append([InlineKeyboardButton(text="--- Позиция по вертикали ---", callback_data="noop")])
-    pos_options = [
-        ("⬆️ Сверху", 0.2),
-        ("🎯 По центру", 0.5),
-        ("⬇️ Снизу", 0.8),
-    ]
-    pos_row = []
-    for text, val in pos_options:
-        is_active = abs(current_v_offset - val) < 0.05
-        prefix = "✅ " if is_active else ""
-        pos_row.append(InlineKeyboardButton(text=f"{prefix}{text}", callback_data=f"pos:{val}"))
-    rows.append(pos_row)
+    pos_options = [("⬆️ Сверху", 0.2), ("🎯 По центру", 0.5), ("⬇️ Снизу", 0.8)]
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{'✅ ' if abs(current_v_offset - val) < 0.05 else ''}{text}",
+            callback_data=f"pos:{val}"
+        ) for text, val in pos_options
+    ])
 
-    # Секция 3: Позиция по горизонтали
     rows.append([InlineKeyboardButton(text="--- Выравнивание по горизонтали ---", callback_data="noop")])
-    halign_options = [
-        ("⬅️ Слева", "left"),
-        ("⏺️ По центру", "center"),
-        ("➡️ Справа", "right"),
-    ]
-    halign_row = []
-    for text, val in halign_options:
-        is_active = current_h_align == val
-        prefix = "✅ " if is_active else ""
-        halign_row.append(InlineKeyboardButton(text=f"{prefix}{text}", callback_data=f"halign:{val}"))
-    rows.append(halign_row)
+    halign_options = [("⬅️ Слева", "left"), ("⏺️ По центру", "center"), ("➡️ Справа", "right")]
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{'✅ ' if current_h_align == val else ''}{text}",
+            callback_data=f"halign:{val}"
+        ) for text, val in halign_options
+    ])
 
-    # Секция 4: Размер шрифта
     rows.append([InlineKeyboardButton(text="--- Размер шрифта ---", callback_data="noop")])
-    size_options = [
-        ("🔍 Мелкий", "2.8cqh"),
-        ("🔤 Средний", "4.8cqh"),
-        ("💥 Крупный", "6.8cqh"),
-    ]
-    size_row = []
-    for text, val in size_options:
-        is_active = current_font_size == val
-        prefix = "✅ " if is_active else ""
-        size_row.append(InlineKeyboardButton(text=f"{prefix}{text}", callback_data=f"size:{val}"))
-    rows.append(size_row)
+    size_options = [("🔍 Мелкий", "2.8cqh"), ("🔤 Средний", "4.8cqh"), ("💥 Крупный", "6.8cqh")]
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{'✅ ' if current_font_size == val else ''}{text}",
+            callback_data=f"size:{val}"
+        ) for text, val in size_options
+    ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -143,26 +122,14 @@ async def start_handler(message: types.Message) -> None:
 async def settings_handler(message: types.Message) -> None:
     keyboard = build_settings_keyboard(message.from_user.id)
     settings = db.get_user_settings(message.from_user.id)
-    
     current_key = settings.get("preset", "milo")
-    all_presets = get_all_presets()
-    preset_label = all_presets.get(current_key, {}).get("name", current_key)
+    preset_label = get_all_presets().get(current_key, {}).get("name", current_key)
     
-    v_offset = float(settings.get("v_offset", 0.8))
-    v_pos_label = "Сверху" if v_offset < 0.35 else ("По центру" if v_offset < 0.65 else "Снизу")
-    
-    h_align = settings.get("h_align", "center")
-    h_pos_label = "Слева" if h_align == "left" else ("Справа" if h_align == "right" else "По центру")
-    
-    font_size = settings.get("font_size", "4.8cqh")
-
     await message.answer(
         f"⚙️ **Текущие настройки:**\n"
         f"• Стиль: `{preset_label}`\n"
-        f"• Вертикаль: `{v_pos_label}`\n"
-        f"• Горизонталь: `{h_pos_label}`\n"
-        f"• Размер: `{font_size}`\n\n"
-        f"Нажмите на параметры ниже, чтобы изменить их:",
+        f"• Размер: `{settings.get('font_size', '4.8cqh')}`\n\n"
+        f"Выберите параметры для изменения:",
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
@@ -173,104 +140,31 @@ async def noop_callback(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
 
-@dp.callback_query(lambda callback: callback.data and callback.data.startswith("preset:"))
-async def preset_callback(callback: types.CallbackQuery) -> None:
-    preset_key = callback.data.split(":", 1)[1]
-    all_presets = get_all_presets()
+@dp.callback_query(lambda callback: callback.data and callback.data.startswith(("preset:", "pos:", "halign:", "size:")))
+async def settings_callback_handler(callback: types.CallbackQuery) -> None:
+    data = callback.data
+    user_id = callback.from_user.id
 
-    if preset_key not in all_presets:
-        await callback.answer("Неизвестный пресет")
-        return
-
-    db.update_user_settings(callback.from_user.id, {"preset": preset_key})
-    preset_title = all_presets[preset_key].get("name", preset_key)
-
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=build_settings_keyboard(callback.from_user.id)
-        )
-    except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
-            pass
-        else:
-            raise
-
-    await callback.answer(f"Стиль изменен на: {preset_title}")
-
-
-@dp.callback_query(lambda callback: callback.data and callback.data.startswith("pos:"))
-async def position_callback(callback: types.CallbackQuery) -> None:
-    val_str = callback.data.split(":", 1)[1]
-    try:
-        v_offset = float(val_str)
-    except ValueError:
-        await callback.answer("Неверное значение позиции")
-        return
-
-    db.update_user_settings(callback.from_user.id, {"v_offset": v_offset})
-    
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=build_settings_keyboard(callback.from_user.id)
-        )
-    except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
-            pass
-        else:
-            raise
-
-    pos_name = "Сверху" if v_offset < 0.35 else ("По центру" if v_offset < 0.65 else "Снизу")
-    await callback.answer(f"Вертикальная позиция: {pos_name}")
-
-
-@dp.callback_query(lambda callback: callback.data and callback.data.startswith("halign:"))
-async def halign_callback(callback: types.CallbackQuery) -> None:
-    h_align = callback.data.split(":", 1)[1]
-    if h_align not in ["left", "center", "right"]:
-        await callback.answer("Неверное значение выравнивания")
-        return
-
-    db.update_user_settings(callback.from_user.id, {"h_align": h_align})
+    if data.startswith("preset:"):
+        key = data.split(":", 1)[1]
+        db.update_user_settings(user_id, {"preset": key})
+    elif data.startswith("pos:"):
+        db.update_user_settings(user_id, {"v_offset": float(data.split(":", 1)[1])})
+    elif data.startswith("halign:"):
+        db.update_user_settings(user_id, {"h_align": data.split(":", 1)[1]})
+    elif data.startswith("size:"):
+        db.update_user_settings(user_id, {"font_size": data.split(":", 1)[1]})
 
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=build_settings_keyboard(callback.from_user.id)
-        )
-    except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
-            pass
-        else:
-            raise
-
-    label = "Слева" if h_align == "left" else ("Справа" if h_align == "right" else "По центру")
-    await callback.answer(f"Горизонтальное выравнивание: {label}")
+        await callback.message.edit_reply_markup(reply_markup=build_settings_keyboard(user_id))
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Настройки обновлены!")
 
 
-@dp.callback_query(lambda callback: callback.data and callback.data.startswith("size:"))
-async def size_callback(callback: types.CallbackQuery) -> None:
-    font_size = callback.data.split(":", 1)[1]
-
-    db.update_user_settings(callback.from_user.id, {"font_size": font_size})
-    
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=build_settings_keyboard(callback.from_user.id)
-        )
-    except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
-            pass
-        else:
-            raise
-
-    await callback.answer(f"Размер шрифта установлен: {font_size}")
-
-
-@dp.message(lambda message: message.content_type in [ContentType.VIDEO, ContentType.VIDEO_NOTE, ContentType.DOCUMENT])
-async def video_handler(message: types.Message) -> None:
-    if message.content_type == ContentType.DOCUMENT:
-        if not message.document.mime_type or not message.document.mime_type.startswith("video/"):
-            await message.answer("Пожалуйста, отправьте видеофайл.")
-            return
+async def _process_single_video(task: dict) -> None:
+    message: types.Message = task["message"]
+    status_msg: types.Message = task["status_msg"]
 
     session_dir = Path(tempfile.mkdtemp(prefix="upload_", dir=TMP_ROOT))
     try:
@@ -278,7 +172,7 @@ async def video_handler(message: types.Message) -> None:
         filename = _make_safe_filename(getattr(file_meta, "file_name", None) or "video.mp4")
         input_path = session_dir / filename
 
-        status_msg = await message.answer("1/2 🎙️ Распознаем речь (Whisper STT)...")
+        await status_msg.edit_text("1/2 🎙️ Распознаем речь (Whisper STT)...")
         await message.bot.download(file_meta.file_id, destination=input_path)
 
         source_duration = probe_media_duration(input_path)
@@ -296,33 +190,52 @@ async def video_handler(message: types.Message) -> None:
         if not keep_segments:
             keep_segments = [{"start": 0.0, "end": max(1.0, source_duration)}]
 
-        # Создаем сессию в Supabase для Mini App
         session_id = db.create_session(
             chat_id=message.from_user.id,
             input_path=str(input_path),
             session_dir=str(session_dir),
             transcript=words,
-            keep_segments=keep_segments
+            keep_segments=keep_segments,
         )
 
         webapp_url = f"{WEBAPP_BASE_URL}/editor?session_id={session_id}"
-
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Открыть редактор субтитров", web_app=WebAppInfo(url=webapp_url))]
         ])
 
         await status_msg.edit_text(
-            "✅ Видео обработано! Нажмите кнопку ниже, чтобы отредактировать текст, стили и тайминги в Mini App:",
-            reply_markup=keyboard
+            "✅ Видео обработано! Нажмите кнопку ниже, чтобы отредактировать текст и стили в Mini App:",
+            reply_markup=keyboard,
         )
 
     except Exception as exc:
-        logger.exception("Ошибка при обработке видео: %s", exc)
-        await message.answer(f"Произошла ошибка при обработке: {exc}")
+        logger.exception("Ошибка обработки видео: %s", exc)
+        await status_msg.edit_text(f"❌ Произошла ошибка при обработке: {exc}")
 
 
-if __name__ == "__main__":
-    if bot is None:
-        logger.error("BOT_TOKEN не настроен в .env файле.")
-        raise SystemExit(1)
-    dp.run_polling(bot)
+async def process_queue_worker() -> None:
+    """Обрабатывает входящие видео по очереди."""
+    while True:
+        task = await video_queue.get()
+        try:
+            await _process_single_video(task)
+        except Exception as exc:
+            logger.error("Ошибка в фоновом воркере: %s", exc)
+        finally:
+            video_queue.task_done()
+
+
+@dp.message(lambda message: message.content_type in [ContentType.VIDEO, ContentType.VIDEO_NOTE, ContentType.DOCUMENT])
+async def video_handler(message: types.Message) -> None:
+    if message.content_type == ContentType.DOCUMENT:
+        if not message.document.mime_type or not message.document.mime_type.startswith("video/"):
+            await message.answer("Пожалуйста, отправьте видеофайл.")
+            return
+
+    q_size = video_queue.qsize()
+    status_msg = await message.answer(
+        f"⏳ Видео добавлено в очередь (Ваша позиция: {q_size + 1}).\n"
+        f"Пожалуйста, подождите..."
+    )
+
+    await video_queue.put({"message": message, "status_msg": status_msg})

@@ -1,8 +1,6 @@
-aiogram
+aiogram>=3.0.0
 fastapi
 uvicorn
-supabase
+groq
 python-dotenv
-httpx
-pydantic
 faster-whisper

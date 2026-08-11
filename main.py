@@ -1,10 +1,12 @@
-import os
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from aiogram import types
 
-from bot import bot, dp
+from bot import bot, dp, process_queue_worker
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,11 +19,16 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # При старте принудительно регистрируем вебхук
-    logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
+    logging.info(f"Регистрация вебхука на URL: {WEBHOOK_URL}")
     await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+
+    # Запуск фонового воркера очереди
+    worker_task = asyncio.create_task(process_queue_worker())
+
     yield
-    # Никаких действий при завершении — вызов delete_webhook удалён!
+
+    # Отмена воркера при завершении работы (без delete_webhook)
+    worker_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -26,7 +26,6 @@ async function run() {
     if (!fs.existsSync(inputVideo)) throw new Error(`Видео не найдено: ${inputVideo}`);
     if (!fs.existsSync(transcriptPath)) throw new Error(`Транскрипт не найден: ${transcriptPath}`);
 
-    // 1. ЗАГРУЗКА И ПАРСИНГ ШАБЛОНА
     const presetDir = path.join(__dirname, 'templates', presetName);
     const cssPath = path.join(presetDir, 'style.css');
     const configPath = path.join(presetDir, 'template.json');
@@ -59,7 +58,6 @@ async function run() {
         fontLinksHTML = `<link href="https://fonts.googleapis.com/css2?family=Anton&family=Caveat:wght@400..700&family=Bebas+Neue&family=Lobster&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Poppins:wght@700;900&display=swap" rel="stylesheet">`;
     }
 
-    // 2. ФОРМИРОВАНИЕ ПЕРЕМЕННЫХ ИЗ ШАБЛОНА
     let defaultVarsCSS = '';
     
     if (templateConfig.styleControls && Array.isArray(templateConfig.styleControls)) {
@@ -112,7 +110,6 @@ async function run() {
 
     defaultVarsCSS += `--tscaps-v-offset: ${topPercent}%;\n--tscaps-position: ${rawPosition};\n--tscaps-h-align: ${hAlign};\n`;
 
-    // 3. ПАРСИНГ ТРАНСКРИПТА
     const rawTranscript = JSON.parse(fs.readFileSync(transcriptPath, 'utf8'));
     let wordsArray = [];
     if (Array.isArray(rawTranscript)) {
@@ -125,7 +122,6 @@ async function run() {
         });
     }
 
-    // 4. ГЕНЕРАЦИЯ HTML РЕНДЕРЕРА
     const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -133,49 +129,12 @@ async function run() {
         <meta charset="utf-8">
         ${fontLinksHTML}
         <style>
-            *, *::before, *::after {
-                box-sizing: border-box !important;
-            }
-            :root {
-                ${defaultVarsCSS}
-            }
-            html, body {
-                width: 1080px;
-                height: 1920px;
-                margin: 0;
-                padding: 0;
-                background: transparent;
-                overflow: hidden;
-            }
-            
-            .stage-wrapper {
-                width: 1080px;
-                height: 1920px;
-                position: absolute;
-                top: 0;
-                left: 0;
-                container-type: size;
-            }
-
-            #stage {
-                width: 1080px !important;
-                height: 1920px !important;
-                position: absolute !important;
-                left: 0 !important;
-                top: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-            }
-
-            .subtitles-container {
-                position: absolute !important;
-                left: 110px !important;
-                width: 860px !important;
-                top: ${topPercent.toFixed(2)}% !important;
-                transform: translateY(${translateY}) !important;
-                box-sizing: border-box !important;
-            }
-
+            *, *::before, *::after { box-sizing: border-box !important; }
+            :root { ${defaultVarsCSS} }
+            html, body { width: 1080px; height: 1920px; margin: 0; padding: 0; background: transparent; overflow: hidden; }
+            .stage-wrapper { width: 1080px; height: 1920px; position: absolute; top: 0; left: 0; container-type: size; }
+            #stage { width: 1080px !important; height: 1920px !important; position: absolute !important; left: 0 !important; top: 0 !important; margin: 0 !important; padding: 0 !important; }
+            .subtitles-container { position: absolute !important; left: 110px !important; width: 860px !important; top: ${topPercent.toFixed(2)}% !important; transform: translateY(${translateY}) !important; box-sizing: border-box !important; }
             ${cssContent}
         </style>
     </head>
@@ -227,7 +186,6 @@ async function run() {
 
             function splitLines(segmentWords) {
                 if (!segmentWords || segmentWords.length === 0) return [];
-                
                 const tailCount = lineSplitterConfig.tailWordCount || 3;
                 if (lineSplitterConfig.type === 'fixed-tail' && segmentWords.length > tailCount) {
                     const line1 = segmentWords.slice(0, segmentWords.length - tailCount);
@@ -237,27 +195,17 @@ async function run() {
                         { start: line2[0].start, end: line2[line2.length - 1].end, words: line2 }
                     ];
                 }
-
-                return [{
-                    start: segmentWords[0].start,
-                    end: segmentWords[segmentWords.length - 1].end,
-                    words: segmentWords
-                }];
+                return [{ start: segmentWords[0].start, end: segmentWords[segmentWords.length - 1].end, words: segmentWords }];
             }
 
             const segments = buildSegments(rawWords);
 
             function renderTime(currentTime) {
                 const segIdx = segments.findIndex(s => currentTime >= s.start && currentTime <= s.end);
-
-                if (segIdx === -1) {
-                    stage.innerHTML = '';
-                    return;
-                }
+                if (segIdx === -1) { stage.innerHTML = ''; return; }
 
                 const seg = segments[segIdx];
                 const segLines = splitLines(seg.words);
-
                 const segOnStarts = (seg.start - currentTime).toFixed(4) + 's';
                 const segOnEnds = (seg.end - currentTime).toFixed(4) + 's';
                 const segDurStr = (seg.end - seg.start).toFixed(4) + 's';
@@ -266,14 +214,10 @@ async function run() {
                 if (segIdx === 0) segmentClasses.push('first-segment-in-document');
                 if (seg.isAfterPause) segmentClasses.push('segment-after-pause');
 
-                let html = '<div class="subtitles-container">' +
-                           '<div class="' + segmentClasses.join(' ') + '" style="' +
+                let html = '<div class="subtitles-container"><div class="' + segmentClasses.join(' ') + '" style="' +
                            '--on-segment-starts:' + segOnStarts + ';' +
                            '--on-segment-ends:' + segOnEnds + ';' +
                            '--segment-duration:' + segDurStr + ';' +
-                           '--on-section-starts:' + segOnStarts + ';' +
-                           '--on-section-ends:' + segOnEnds + ';' +
-                           '--section-duration:' + segDurStr + ';' +
                            '">';
 
                 segLines.forEach((line, lineIdx) => {
@@ -293,9 +237,6 @@ async function run() {
                             '--on-line-starts:' + lineOnStarts + ';' +
                             '--on-line-ends:' + lineOnEnds + ';' +
                             '--line-duration:' + lineDurStr + ';' +
-                            '--on-line-being-narrated-starts:' + lineOnStarts + ';' +
-                            '--on-line-being-narrated-ends:' + lineOnEnds + ';' +
-                            '--line-being-narrated-duration:' + lineDurStr + ';' +
                             '">';
 
                     line.words.forEach((w, wIdx) => {
@@ -317,24 +258,15 @@ async function run() {
 
                         html += '<span class="word ' + wordStateClass + ' ' + positionalClasses.join(' ') + '" ' +
                                 'data-text="' + txt + '" ' +
-                                'data-word="' + txt + '" ' +
-                                'data-content="' + txt + '" ' +
                                 'style="' +
                                 '--word-char-count:' + txt.length + ';' +
                                 '--on-word-starts:' + wOnStarts + ';' +
                                 '--on-word-ends:' + wOnEnds + ';' +
                                 '--word-duration:' + wDurStr + ';' +
-                                '--on-word-being-narrated-starts:' + wOnStarts + ';' +
-                                '--on-word-being-narrated-ends:' + wOnEnds + ';' +
-                                '--word-being-narrated-duration:' + wDurStr + ';' +
-                                '">' + 
-                                txt + 
-                                '</span>';
+                                '">' + txt + '</span>';
                     });
-
                     html += '</div>';
                 });
-
                 html += '</div></div>';
                 stage.innerHTML = html;
             }
@@ -343,16 +275,22 @@ async function run() {
     </html>
     `;
 
-    // 5. РЕНДЕРИНГ КАДРОВ
     let browser;
     try {
+        // Оптимизированные флаги запуска Chromium для лимитов Render (512MB RAM)
         browser = await puppeteer.launch({
             headless: true,
+            executablePath: process.env.CHROME_BIN || undefined,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--use-gl=swiftshader',
-                '--disable-gpu'
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu',
+                '--memory-pressure-off'
             ]
         });
 
@@ -361,9 +299,7 @@ async function run() {
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         await page.evaluate(async () => {
-            if (document.fonts) {
-                await document.fonts.ready;
-            }
+            if (document.fonts) await document.fonts.ready;
         });
 
         const getDuration = () => new Promise((resolve, reject) => {
@@ -373,8 +309,7 @@ async function run() {
                 '-of', 'default=noprint_wrappers=1:nokey=1',
                 inputVideo
             ]);
-            let out = '';
-            let err = '';
+            let out = '', err = '';
             ffprobe.stdout.on('data', data => out += data.toString());
             ffprobe.stderr.on('data', data => err += data.toString());
             ffprobe.on('close', code => {
@@ -399,13 +334,11 @@ async function run() {
             '-map', '[outv]',
             '-map', '0:a?',
             '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '18',
+            '-preset', 'ultrafast',
+            '-crf', '23',
             '-c:a', 'copy',
             outputPath
         ]);
-
-        console.log(`Рендеринг ${totalFrames} кадров через Puppeteer...`);
 
         for (let frame = 0; frame < totalFrames; frame++) {
             const currentTime = frame / fps;
@@ -424,11 +357,11 @@ async function run() {
         await new Promise((resolve, reject) => {
             ffmpeg.on('close', code => {
                 if (code === 0) resolve();
-                else reject(new Error(`FFmpeg завершился с кодом ошибки: ${code}`));
+                else reject(new Error(`FFmpeg error code: ${code}`));
             });
         });
 
-        console.log(`Рендеринг успешно завершен: ${outputPath}`);
+        console.log(`Рендеринг завершен: ${outputPath}`);
     } finally {
         if (browser) {
             await browser.close();
