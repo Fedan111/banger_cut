@@ -5,14 +5,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from aiogram import types
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from aiogram import types
 
 import db
 from bot import bot, dp, process_queue_worker
+
+try:
+    import video_processor
+except ImportError:
+    video_processor = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -88,7 +93,7 @@ async def get_session_api(session_id: str):
 
 @app.post("/api/session/{session_id}")
 async def update_session_api(session_id: str, payload: UpdateSessionRequest):
-    """Сохраняет отредактированный транскрипт в Supabase."""
+    """Сохраняет отредактированный транскрипт в Supabase и запускает фоновый рендеринг."""
     try:
         if hasattr(db, "update_session"):
             db.update_session(session_id, {
@@ -102,6 +107,10 @@ async def update_session_api(session_id: str, payload: UpdateSessionRequest):
                 "keep_segments": payload.keep_segments,
                 "status": "edited"
             }).eq("id", session_id).execute()
+
+        # Запуск обработки видео в фоновом режиме
+        if video_processor and hasattr(video_processor, "render_final_video_task"):
+            asyncio.create_task(video_processor.render_final_video_task(session_id))
 
         return {"status": "ok", "message": "Сессия успешно обновлена"}
     except Exception as e:
