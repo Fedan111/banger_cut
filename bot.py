@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import ContentType, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from dotenv import load_dotenv
@@ -32,7 +32,14 @@ load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
+
+# Гарантируем корректный HTTPS URL для Telegram WebApp
+raw_webapp_url = os.getenv("WEBAPP_BASE_URL", "https://banger-cut.onrender.com").strip().rstrip("/")
+if raw_webapp_url and not raw_webapp_url.startswith("http"):
+    WEBAPP_BASE_URL = f"https://{raw_webapp_url}"
+else:
+    WEBAPP_BASE_URL = raw_webapp_url or "https://banger-cut.onrender.com"
+
 TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +51,21 @@ dp = Dispatcher()
 # Очередь для фоновой обработки видео
 video_queue: asyncio.Queue = asyncio.Queue()
 _worker_task: Optional[asyncio.Task] = None
+
+
+async def safe_edit_status(message: types.Message, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
+    """Безопасное обновление статусного сообщения с защитой от лимитов Telegram."""
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await asyncio.sleep(0.5)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            await message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning("Не удалось обновить статусное сообщение: %s", exc)
 
 
 def get_all_presets() -> Dict[str, Dict[str, str]]:
@@ -177,10 +199,9 @@ async def _process_single_video(task: dict) -> None:
         filename = _make_safe_filename(getattr(file_meta, "file_name", None) or "video.mp4")
         raw_input_path = session_dir / filename
 
-        await status_msg.edit_text("1/3 📥 Загружаем и оптимизируем видео...")
+        await safe_edit_status(status_msg, "1/3 📥 Загружаем и оптимизируем видео...")
         await message.bot.download(file_meta.file_id, destination=raw_input_path)
 
-        # Конвертация в совместимый веб-формат MP4 с ограничением потоков для защиты от OOM
         converted_mp4 = session_dir / "converted_input.mp4"
         conv_cmd = [
             "ffmpeg", "-y", "-threads", "1",
@@ -205,15 +226,14 @@ async def _process_single_video(task: dict) -> None:
             logger.warning("Конвертация не удалась, используем исходный файл: %s", conv_res.stderr)
             input_path = raw_input_path
 
-        await status_msg.edit_text("1/3 🎙️ Распознаем речь (Whisper STT)...")
+        await safe_edit_status(status_msg, "2/3 🎙️ Распознаем речь (Whisper STT)...")
 
         source_duration = video_processor.probe_media_duration(input_path) if video_processor else 10.0
         
-        # Вызов транскрибации в отдельном потоке, чтобы не блокировать веб-сервер
         whisper_data = await asyncio.to_thread(transcribe_audio, str(input_path))
         words = whisper_data.get("words", [])
 
-        await status_msg.edit_text("2/3 ✂️ Формируем монтажный план...")
+        await safe_edit_status(status_msg, "2/3 ✂️ Формируем монтажный план...")
         keep_segments: List[Dict[str, Any]] = []
         if GROQ_API_KEY and not GROQ_API_KEY.startswith("YOUR_"):
             try:
@@ -232,9 +252,9 @@ async def _process_single_video(task: dict) -> None:
             keep_segments=keep_segments,
         )
 
-        # 3/3 Предварительный рендеринг видео с запеченными субтитрами для Mini App
+        await safe_edit_status(status_msg, "3/3 🎨 Подготавливаем редактор субтитров...")
+
         if video_processor and hasattr(video_processor, "generate_preview_draft"):
-            await status_msg.edit_text("3/3 🎨 Генерируем превью со стилем...")
             try:
                 preview_path = await asyncio.to_thread(video_processor.generate_preview_draft, session_id)
                 if preview_path and Path(preview_path).exists():
@@ -251,14 +271,15 @@ async def _process_single_video(task: dict) -> None:
             [InlineKeyboardButton(text="✏️ Открыть редактор субтитров", web_app=WebAppInfo(url=webapp_url))]
         ])
 
-        await status_msg.edit_text(
-            "✅ Видео обработано! Нажмите кнопку ниже, чтобы отредактировать текст и стили в Mini App:",
+        await safe_edit_status(
+            status_msg,
+            "✅ **Видео обработано!**\nНажмите кнопку ниже, чтобы отредактировать текст и стили в Mini App:",
             reply_markup=keyboard,
         )
 
     except Exception as exc:
         logger.exception("Ошибка обработки видео: %s", exc)
-        await status_msg.edit_text(f"❌ Произошла ошибка при обработке: {exc}")
+        await safe_edit_status(status_msg, f"❌ Произошла ошибка при обработке: {exc}")
 
 
 async def process_queue_worker() -> None:
