@@ -91,6 +91,29 @@ async def get_session_api(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/session/{session_id}/video")
+async def get_session_video(session_id: str):
+    """Отдаёт видеофайл сессии для воспроизведения в Mini App."""
+    try:
+        session = db.get_session(session_id) if hasattr(db, "get_session") else None
+        if not session and hasattr(db, "supabase"):
+            res = db.supabase.table("sessions").select("*").eq("id", session_id).execute()
+            if res.data:
+                session = res.data[0]
+
+        if not session or not session.get("input_path"):
+            raise HTTPException(status_code=404, detail="Запись сессии не найдена")
+
+        video_path = Path(session["input_path"])
+        if not video_path.exists():
+            raise HTTPException(status_code=404, detail="Файл видео не найден на сервере")
+
+        return FileResponse(video_path, media_type="video/mp4")
+    except Exception as e:
+        logging.error("Ошибка при получении видео для сессии %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/session/{session_id}")
 async def update_session_api(session_id: str, payload: UpdateSessionRequest):
     """Сохраняет отредактированный транскрипт в Supabase и запускает фоновый рендеринг."""

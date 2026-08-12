@@ -73,6 +73,20 @@
             to { transform: rotate(360deg); }
         }
 
+        .video-container {
+            margin-bottom: 16px;
+            width: 100%;
+        }
+
+        .video-player {
+            width: 100%;
+            max-height: 260px;
+            border-radius: 12px;
+            background-color: #000;
+            display: block;
+            object-fit: contain;
+        }
+
         .word-grid {
             display: flex;
             flex-wrap: wrap;
@@ -119,13 +133,6 @@
             text-align: center;
         }
 
-        .time-badge {
-            font-size: 10px;
-            color: var(--hint-color);
-            margin-left: 4px;
-            opacity: 0.7;
-        }
-
         .stats-bar {
             display: flex;
             justify-content: space-between;
@@ -148,8 +155,8 @@
 <body>
 
     <div class="header">
-        <h1>✏️ Редактор текста</h1>
-        <p>Нажмите на слово, чтобы включить/выключить его из монтажа. Нажмите и удерживайте, чтобы изменить текст.</p>
+        <h1>✏️ Редактор субтитров</h1>
+        <p>Нажмите на слово, чтобы включить/выключить его из монтажа. Нажмите на текст, чтобы отредактировать слово.</p>
     </div>
 
     <div id="loader" class="loader">
@@ -158,6 +165,13 @@
     </div>
 
     <div id="editor-container" style="display: none;">
+        <div class="video-container">
+            <video id="video-player" class="video-player" controls playsinline preload="metadata">
+                <source id="video-source" src="" type="video/mp4">
+                Ваш браузер не поддерживает просмотр видео.
+            </video>
+        </div>
+
         <div class="word-grid" id="word-grid"></div>
         <div class="stats-bar">
             <span id="words-count">Всего слов: 0</span>
@@ -200,6 +214,12 @@
                 wordsData.forEach(word => {
                     word.active = isTimeInKeepSegments(word.start, word.end, keepSegments);
                 });
+
+                // Подгружаем источник для видеоплеера
+                const videoPlayer = document.getElementById('video-player');
+                const videoSource = document.getElementById('video-source');
+                videoSource.src = `/api/session/${sessionId}/video`;
+                videoPlayer.load();
 
                 renderWords();
                 setupMainButton();
