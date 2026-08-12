@@ -3,12 +3,13 @@ import json
 import logging
 import asyncio
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from aiogram.types import Update
 
-from bot import bot, TMP_ROOT
+from bot import bot, dp, TMP_ROOT
 from video_processor import render_final_video
 import db
 
@@ -30,6 +31,26 @@ class RenderRequest(BaseModel):
     font_size: str = "medium"
     v_offset: float = 0.0
     h_align: str = "center"
+
+
+# Health-check маршруты для Render
+@app.get("/")
+@app.head("/")
+async def health_check():
+    return {"status": "ok", "service": "banger-cut"}
+
+
+# Обработчик Webhook от Telegram
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request):
+    try:
+        data = await request.json()
+        telegram_update = Update(**data)
+        await dp.feed_update(bot, telegram_update)
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.exception("Ошибка при обработке вебхука Telegram:")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.get("/editor", response_class=HTMLResponse)
@@ -81,7 +102,6 @@ async def _execute_render(session_id: str, data: RenderRequest):
     output_path = session_dir / f"{input_path.stem}_final.mp4"
 
     try:
-        # Не блокируем событийно-ориентированный цикл FastAPI во время долговременной сборки
         await asyncio.to_thread(
             render_final_video,
             input_video=input_path,
@@ -105,7 +125,7 @@ async def _execute_render(session_id: str, data: RenderRequest):
 
         return {"status": "ok"}
     except Exception as exc:
-        logger.exception("Ошибка при выполнении рендеринга:")
+        logger.exception("Детальная ошибка во время рендеринга:")
         db.update_session_status(session_id, "error")
         raise HTTPException(status_code=500, detail=f"Ошибка рендеринга: {exc}")
 
