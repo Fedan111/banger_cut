@@ -36,16 +36,13 @@ TMP_ROOT = Path("tmp")
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 
 bot = Bot(token=BOT_TOKEN) if not BOT_TOKEN.startswith("YOUR_") else None
 dp = Dispatcher()
 
 # Очередь для фоновой обработки видео
 video_queue: asyncio.Queue = asyncio.Queue()
+_worker_task: Optional[asyncio.Task] = None
 
 
 def get_all_presets() -> Dict[str, Dict[str, str]]:
@@ -183,14 +180,16 @@ async def _process_single_video(task: dict) -> None:
         await message.bot.download(file_meta.file_id, destination=input_path)
 
         source_duration = video_processor.probe_media_duration(input_path) if video_processor else 10.0
-        whisper_data = transcribe_audio(str(input_path))
+        
+        # Вызов транскрибации в отдельном потоке, чтобы не блокировать веб-сервер
+        whisper_data = await asyncio.to_thread(transcribe_audio, str(input_path))
         words = whisper_data.get("words", [])
 
         await status_msg.edit_text("2/3 ✂️ Формируем монтажный план...")
         keep_segments: List[Dict[str, Any]] = []
         if GROQ_API_KEY and not GROQ_API_KEY.startswith("YOUR_"):
             try:
-                keep_segments = get_cut_plan(whisper_data, GROQ_API_KEY)
+                keep_segments = await asyncio.to_thread(get_cut_plan, whisper_data, GROQ_API_KEY)
             except Exception as exc:
                 logger.warning("Ошибка генерации плана обрезки: %s", exc)
 
@@ -236,9 +235,11 @@ async def _process_single_video(task: dict) -> None:
 
 async def process_queue_worker() -> None:
     """Обрабатывает входящие видео по очереди."""
+    logger.info("⚡ Воркер обработки очереди видео запущен и готов к работе.")
     while True:
         task = await video_queue.get()
         try:
+            logger.info("Воркер взял задачу из очереди...")
             await _process_single_video(task)
         except Exception as exc:
             logger.error("Ошибка в фоновом воркере: %s", exc)
@@ -246,8 +247,23 @@ async def process_queue_worker() -> None:
             video_queue.task_done()
 
 
+def ensure_worker_running():
+    """Гарантирует запуск фоновой задачи воркера в активном событиеном цикле."""
+    global _worker_task
+    if _worker_task is None or _worker_task.done():
+        logger.info("Запуск фоновой задачи process_queue_worker...")
+        _worker_task = asyncio.create_task(process_queue_worker())
+
+
+@dp.startup()
+async def on_startup():
+    ensure_worker_running()
+
+
 @dp.message(lambda message: message.content_type in [ContentType.VIDEO, ContentType.VIDEO_NOTE, ContentType.DOCUMENT])
 async def video_handler(message: types.Message) -> None:
+    ensure_worker_running()
+
     if message.content_type == ContentType.DOCUMENT:
         if not message.document.mime_type or not message.document.mime_type.startswith("video/"):
             await message.answer("Пожалуйста, отправьте видеофайл.")

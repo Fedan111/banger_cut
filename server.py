@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from aiogram.types import Update
 
-from bot import bot, dp, TMP_ROOT
+from bot import bot, dp, TMP_ROOT, ensure_worker_running
 from video_processor import render_final_video
 import db
 
@@ -24,6 +24,12 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 app.mount("/tmp_media", StaticFiles(directory=str(TMP_ROOT)), name="tmp_media")
 
 
+@app.on_event("startup")
+async def startup_event():
+    ensure_worker_running()
+    logger.info("FastAPI запущен, фоновый воркер очереди видео активирован.")
+
+
 class RenderRequest(BaseModel):
     session_id: str | None = None
     transcript: list[dict] = Field(default_factory=list)
@@ -33,14 +39,12 @@ class RenderRequest(BaseModel):
     h_align: str = "center"
 
 
-# Health-check маршруты для Render
 @app.get("/")
 @app.head("/")
 async def health_check():
     return {"status": "ok", "service": "banger-cut"}
 
 
-# Обработчик Webhook от Telegram
 @app.post("/webhook/{token}")
 async def telegram_webhook(token: str, request: Request):
     try:
