@@ -1,8 +1,11 @@
-aiogram>=3.0.0
 fastapi
-uvicorn
+uvicorn[standard]
+python-multipart
+aiogram>=3.0.0
 groq
 python-dotenv
 faster-whisper
 supabase
 httpx
+opencv-python-headless
+pydantic
