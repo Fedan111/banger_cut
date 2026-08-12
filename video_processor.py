@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import gc
+import json
 import logging
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import db
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +149,9 @@ def render_final_video(
     if h_align:
         cmd.extend(["--h-align", str(h_align)])
 
+    # Принудительная очистка RAM перед запуском процессоемкого Chromium
+    gc.collect()
+
     logger.info("Запуск Node.js рендерера: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -160,3 +168,58 @@ def render_final_video(
 
     logger.info("Видео сгенерировано через Puppeteer. Размер: %d байт", output_path.stat().st_size)
     return output_path
+
+
+async def render_final_video_task(session_id: str) -> None:
+    """Асинхронная задача для обработки вызова рендеринга из FastAPI BackgroundTasks."""
+    session = db.get_session(session_id) if hasattr(db, "get_session") else None
+    if not session and hasattr(db, "supabase"):
+        res = db.supabase.table("sessions").select("*").eq("id", session_id).execute()
+        if res.data:
+            session = res.data[0]
+
+    if not session:
+        logger.error("Сессия %s не найдена для запуска рендеринга", session_id)
+        return
+
+    session_dir = Path(session["session_dir"])
+    input_path = Path(session["input_path"])
+    output_path = session_dir / f"{input_path.stem}_final.mp4"
+    transcript_path = session_dir / "updated_transcript.json"
+
+    transcript_data = session.get("transcript", [])
+    if isinstance(transcript_data, str):
+        try:
+            transcript_data = json.loads(transcript_data)
+        except Exception:
+            transcript_data = []
+
+    transcript_path.write_text(json.dumps(transcript_data, ensure_ascii=False), encoding="utf-8")
+    user_settings = db.get_user_settings(session["chat_id"]) if hasattr(db, "get_user_settings") else {}
+
+    try:
+        await asyncio.to_thread(
+            render_final_video,
+            input_video=input_path,
+            subtitles_path=transcript_path,
+            output_video=output_path,
+            preset_name=user_settings.get("preset", "milo"),
+            font_size=user_settings.get("font_size", "4.8cqh"),
+            v_offset=user_settings.get("v_offset", 0.8),
+            h_align=user_settings.get("h_align", "center"),
+            keep_segments=session.get("keep_segments", []),
+        )
+
+        update_data = {"status": "done", "styled_path": str(output_path)}
+        if hasattr(db, "update_session"):
+            db.update_session(session_id, update_data)
+        elif hasattr(db, "supabase"):
+            db.supabase.table("sessions").update(update_data).eq("id", session_id).execute()
+
+    except Exception as exc:
+        logger.exception("Ошибка в фоновом рендеринге сессии %s: %s", session_id, exc)
+        err_data = {"status": "error"}
+        if hasattr(db, "update_session"):
+            db.update_session(session_id, err_data)
+        elif hasattr(db, "supabase"):
+            db.supabase.table("sessions").update(err_data).eq("id", session_id).execute()

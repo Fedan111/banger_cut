@@ -131,7 +131,8 @@ async function run() {
         <style>
             *, *::before, *::after { box-sizing: border-box !important; }
             :root { ${defaultVarsCSS} }
-            html, body { width: 1080px; height: 1920px; margin: 0; padding: 0; background: transparent; overflow: hidden; }
+            html, body { width: 540px; height: 960px; margin: 0; padding: 0; background: transparent; overflow: hidden; }
+            .scaler { width: 1080px; height: 1920px; transform: scale(0.5); transform-origin: 0 0; }
             .stage-wrapper { width: 1080px; height: 1920px; position: absolute; top: 0; left: 0; container-type: size; }
             #stage { width: 1080px !important; height: 1920px !important; position: absolute !important; left: 0 !important; top: 0 !important; margin: 0 !important; padding: 0 !important; }
             .subtitles-container { position: absolute !important; left: 110px !important; width: 860px !important; top: ${topPercent.toFixed(2)}% !important; transform: translateY(${translateY}) !important; box-sizing: border-box !important; }
@@ -139,8 +140,10 @@ async function run() {
         </style>
     </head>
     <body class="tscaps preset-${presetName} ${presetName}">
-        <div class="stage-wrapper tscaps preset-${presetName} ${presetName}">
-            <div class="stage tscaps preset-${presetName} ${presetName}" id="stage"></div>
+        <div class="scaler">
+            <div class="stage-wrapper tscaps preset-${presetName} ${presetName}">
+                <div class="stage tscaps preset-${presetName} ${presetName}" id="stage"></div>
+            </div>
         </div>
         <script>
             const rawWords = ${JSON.stringify(wordsArray)};
@@ -277,7 +280,6 @@ async function run() {
 
     let browser;
     try {
-        // Жесткое ограничение потребления RAM для бесплатного тарифа Render (512MB)
         browser = await puppeteer.launch({
             headless: true,
             executablePath: process.env.CHROME_BIN || undefined,
@@ -295,7 +297,8 @@ async function run() {
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 1080, height: 1920, deviceScaleFactor: 1 });
+        // Уменьшенный viewport для снижения расхода RAM
+        await page.setViewport({ width: 540, height: 960, deviceScaleFactor: 1 });
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         await page.evaluate(async () => {
@@ -323,6 +326,7 @@ async function run() {
         const fps = 30;
         const totalFrames = Math.ceil(duration * fps);
 
+        // FFmpeg рендер с выборочным масштабированием кадра оверлея обратно до 1080x1920
         const ffmpeg = spawn('ffmpeg', [
             '-y',
             '-i', inputVideo,
@@ -330,7 +334,7 @@ async function run() {
             '-vcodec', 'png',
             '-r', `${fps}`,
             '-i', 'pipe:0',
-            '-filter_complex', '[0:v][1:v]overlay=0:0:shortest=1[outv]',
+            '-filter_complex', '[1:v]scale=1080:1920[sub];[0:v][sub]overlay=0:0:shortest=1[outv]',
             '-map', '[outv]',
             '-map', '0:a?',
             '-c:v', 'libx264',
@@ -340,7 +344,6 @@ async function run() {
             outputPath
         ]);
 
-        // Функция контроля противодавления STDIN (предотвращает переполнение RAM)
         const writeFrameToFFmpeg = (buffer) => {
             return new Promise((resolve) => {
                 const canContinue = ffmpeg.stdin.write(buffer);
