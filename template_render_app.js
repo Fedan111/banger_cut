@@ -53,3 +53,38 @@ window.renderTscapsFrame = async function(currentTime) {
     // Отрисовка кадра встроенным фрейм-рендерером движка
     await window.tscapsPipeline.renderFrameAt(currentTime);
 };
+
+// Безопасная функция сохранения для WebApp (обходит ошибку string did not Match pattern)
+window.saveAndRender = async function(sessionId, updatedWords, currentPreset) {
+    try {
+        if (window.Telegram?.WebApp) {
+            window.Telegram.WebApp.MainButton.showProgress();
+        }
+
+        const response = await fetch('/api/render', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                session_id: sessionId,
+                words: updatedWords,
+                preset: currentPreset
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ошибка сервера: ${response.statusText}`);
+        }
+
+        if (window.Telegram?.WebApp) {
+            window.Telegram.WebApp.close();
+        }
+    } catch (err) {
+        console.error("Ошибка при сохранении:", err);
+        alert("Не удалось запустить монтирование: " + err.message);
+        if (window.Telegram?.WebApp) {
+            window.Telegram.WebApp.MainButton.hideProgress();
+        }
+    }
+};

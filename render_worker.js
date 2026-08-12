@@ -277,7 +277,7 @@ async function run() {
 
     let browser;
     try {
-        // Оптимизированные флаги запуска Chromium для лимитов Render (512MB RAM)
+        // Жесткое ограничение потребления RAM для бесплатного тарифа Render (512MB)
         browser = await puppeteer.launch({
             headless: true,
             executablePath: process.env.CHROME_BIN || undefined,
@@ -288,9 +288,9 @@ async function run() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',
                 '--disable-gpu',
-                '--memory-pressure-off'
+                '--disable-audio-output',
+                '--js-flags=--max-old-space-size=128'
             ]
         });
 
@@ -335,10 +335,22 @@ async function run() {
             '-map', '0:a?',
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
-            '-crf', '23',
+            '-crf', '26',
             '-c:a', 'copy',
             outputPath
         ]);
+
+        // Функция контроля противодавления STDIN (предотвращает переполнение RAM)
+        const writeFrameToFFmpeg = (buffer) => {
+            return new Promise((resolve) => {
+                const canContinue = ffmpeg.stdin.write(buffer);
+                if (canContinue) {
+                    resolve();
+                } else {
+                    ffmpeg.stdin.once('drain', resolve);
+                }
+            });
+        };
 
         for (let frame = 0; frame < totalFrames; frame++) {
             const currentTime = frame / fps;
@@ -349,7 +361,7 @@ async function run() {
                 omitBackground: true
             });
 
-            ffmpeg.stdin.write(screenshotBuffer);
+            await writeFrameToFFmpeg(screenshotBuffer);
         }
 
         ffmpeg.stdin.end();
