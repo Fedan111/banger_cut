@@ -54,16 +54,19 @@ def trim_video_by_segments(
         f"concat=n={len(keep_segments)}:v=1:a=1[outv][outa]"
     )
 
+    # Ограничиваем FFmpeg 1 потоком и быстрым пресетом для экономного использования RAM (Render 512MB)
     cmd = [
         "ffmpeg", "-y",
+        "-threads", "1",
         "-i", str(input_video),
         "-filter_complex", filter_complex,
         "-map", "[outv]",
         "-map", "[outa]",
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
+        "-preset", "ultrafast",
+        "-crf", "26",
         "-c:a", "aac",
+        "-b:a", "128k",
         str(output_trimmed_video)
     ]
 

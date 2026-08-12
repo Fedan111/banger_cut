@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import traceback
 from pathlib import Path
@@ -174,10 +175,37 @@ async def _process_single_video(task: dict) -> None:
     try:
         file_meta = message.video or message.video_note or message.document
         filename = _make_safe_filename(getattr(file_meta, "file_name", None) or "video.mp4")
-        input_path = session_dir / filename
+        raw_input_path = session_dir / filename
+
+        await status_msg.edit_text("1/3 📥 Загружаем и оптимизируем видео...")
+        await message.bot.download(file_meta.file_id, destination=raw_input_path)
+
+        # Конвертация в совместимый веб-формат MP4 с ограничением потоков для защиты от OOM
+        converted_mp4 = session_dir / "converted_input.mp4"
+        conv_cmd = [
+            "ffmpeg", "-y", "-threads", "1",
+            "-i", str(raw_input_path),
+            "-vcodec", "libx264",
+            "-crf", "26",
+            "-preset", "ultrafast",
+            "-acodec", "aac",
+            "-b:a", "128k",
+            str(converted_mp4)
+        ]
+        
+        logger.info("Запуск конвертации медиафайла %s в MP4...", raw_input_path.name)
+        conv_res = await asyncio.to_thread(
+            subprocess.run, conv_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+        if converted_mp4.exists() and converted_mp4.stat().st_size > 0:
+            input_path = converted_mp4
+            logger.info("Успешно сконвертировано в MP4.")
+        else:
+            logger.warning("Конвертация не удалась, используем исходный файл: %s", conv_res.stderr)
+            input_path = raw_input_path
 
         await status_msg.edit_text("1/3 🎙️ Распознаем речь (Whisper STT)...")
-        await message.bot.download(file_meta.file_id, destination=input_path)
 
         source_duration = video_processor.probe_media_duration(input_path) if video_processor else 10.0
         
@@ -248,7 +276,7 @@ async def process_queue_worker() -> None:
 
 
 def ensure_worker_running():
-    """Гарантирует запуск фоновой задачи воркера в активном событиеном цикле."""
+    """Гарантирует запуск фоновой задачи воркера в активном событийном цикле."""
     global _worker_task
     if _worker_task is None or _worker_task.done():
         logger.info("Запуск фоновой задачи process_queue_worker...")
