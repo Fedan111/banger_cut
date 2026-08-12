@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -88,6 +89,9 @@ def render_final_video(
     **kwargs,
 ) -> Path:
     """Рендерит итоговое видео с наложением tscaps субтитров через Headless Chrome (render_worker.js)."""
+    if not shutil.which("node"):
+        raise RuntimeError("Окружение Node.js не найдено на сервере. Убедитесь, что node установлен.")
+
     input_path = Path(input_video).resolve()
     subtitles_json_path = Path(subtitles_path).resolve()
     output_path = Path(output_video).resolve()
