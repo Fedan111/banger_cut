@@ -74,6 +74,7 @@
         }
 
         .video-container {
+            position: relative;
             margin-bottom: 16px;
             width: 100%;
         }
@@ -85,6 +86,27 @@
             background-color: #000;
             display: block;
             object-fit: contain;
+        }
+
+        /* Оверлей субтитров поверх видео */
+        .subtitle-overlay {
+            position: absolute;
+            bottom: 35px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.75);
+            color: #ffffff;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 700;
+            text-align: center;
+            max-width: 85%;
+            pointer-events: none;
+            display: none;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .word-grid {
@@ -170,6 +192,7 @@
                 <source id="video-source" src="" type="video/mp4">
                 Ваш браузер не поддерживает просмотр видео.
             </video>
+            <div id="subtitle-overlay" class="subtitle-overlay"></div>
         </div>
 
         <div class="word-grid" id="word-grid"></div>
@@ -192,6 +215,9 @@
         let wordsData = [];
         let keepSegments = [];
 
+        const videoPlayer = document.getElementById('video-player');
+        const subtitleOverlay = document.getElementById('subtitle-overlay');
+
         async function loadSession() {
             if (!sessionId) {
                 showError("ID сессии отсутствует в URL");
@@ -210,19 +236,17 @@
                 wordsData = session.transcript || [];
                 keepSegments = session.keep_segments || [];
 
-                // Помечаем активные/неактивные слова на основе keep_segments
                 wordsData.forEach(word => {
                     word.active = isTimeInKeepSegments(word.start, word.end, keepSegments);
                 });
 
-                // Подгружаем источник для видеоплеера
-                const videoPlayer = document.getElementById('video-player');
                 const videoSource = document.getElementById('video-source');
                 videoSource.src = `/api/session/${sessionId}/video`;
                 videoPlayer.load();
 
                 renderWords();
                 setupMainButton();
+                setupSubtitleSync();
 
                 document.getElementById('loader').style.display = 'none';
                 document.getElementById('editor-container').style.display = 'block';
@@ -235,6 +259,20 @@
         function isTimeInKeepSegments(start, end, segments) {
             if (!segments || segments.length === 0) return true;
             return segments.some(seg => (start >= seg.start && start <= seg.end) || (end >= seg.start && end <= seg.end));
+        }
+
+        function setupSubtitleSync() {
+            videoPlayer.addEventListener('timeupdate', () => {
+                const currentTime = videoPlayer.currentTime;
+                const currentWord = wordsData.find(w => w.active && currentTime >= w.start && currentTime <= w.end);
+
+                if (currentWord && currentWord.word.trim()) {
+                    subtitleOverlay.innerText = currentWord.word;
+                    subtitleOverlay.style.display = 'block';
+                } else {
+                    subtitleOverlay.style.display = 'none';
+                }
+            });
         }
 
         function renderWords() {
@@ -258,7 +296,6 @@
                     input.size = Math.max(e.target.value.length, 1);
                 });
 
-                // Переключение активности слова при клике
                 chip.addEventListener('click', (e) => {
                     if (e.target === input) return;
                     wordsData[index].active = !wordsData[index].active;
@@ -283,7 +320,6 @@
         async function saveChanges() {
             tg.MainButton.showProgress();
 
-            // Формируем новые keep_segments из активных слов
             const activeWords = wordsData.filter(w => w.active);
             const newKeepSegments = [];
 
