@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -18,7 +19,13 @@ import db
 from llm_cutter import get_cut_plan
 from preset_templates import PRESET_TEMPLATES
 from transcriber import transcribe_audio
-from video_processor import probe_media_duration
+
+# Безопасный импорт video_processor с подробным логированием ошибки
+try:
+    import video_processor
+except Exception as err:
+    logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать video_processor в bot.py:\n%s", traceback.format_exc())
+    video_processor = None
 
 load_dotenv(dotenv_path=Path(__file__).with_name('.env'))
 
@@ -172,14 +179,14 @@ async def _process_single_video(task: dict) -> None:
         filename = _make_safe_filename(getattr(file_meta, "file_name", None) or "video.mp4")
         input_path = session_dir / filename
 
-        await status_msg.edit_text("1/2 🎙️ Распознаем речь (Whisper STT)...")
+        await status_msg.edit_text("1/3 🎙️ Распознаем речь (Whisper STT)...")
         await message.bot.download(file_meta.file_id, destination=input_path)
 
-        source_duration = probe_media_duration(input_path)
+        source_duration = video_processor.probe_media_duration(input_path) if video_processor else 10.0
         whisper_data = transcribe_audio(str(input_path))
         words = whisper_data.get("words", [])
 
-        await status_msg.edit_text("2/2 ✂️ Формируем монтажный план...")
+        await status_msg.edit_text("2/3 ✂️ Формируем монтажный план...")
         keep_segments: List[Dict[str, Any]] = []
         if GROQ_API_KEY and not GROQ_API_KEY.startswith("YOUR_"):
             try:
@@ -197,6 +204,20 @@ async def _process_single_video(task: dict) -> None:
             transcript=words,
             keep_segments=keep_segments,
         )
+
+        # 3/3 Предварительный рендеринг видео с запеченными субтитрами для Mini App
+        if video_processor and hasattr(video_processor, "generate_preview_draft"):
+            await status_msg.edit_text("3/3 🎨 Генерируем превью со стилем...")
+            try:
+                preview_path = await asyncio.to_thread(video_processor.generate_preview_draft, session_id)
+                if preview_path and Path(preview_path).exists():
+                    update_data = {"preview_path": str(preview_path)}
+                    if hasattr(db, "update_session"):
+                        db.update_session(session_id, update_data)
+                    elif hasattr(db, "supabase"):
+                        db.supabase.table("sessions").update(update_data).eq("id", session_id).execute()
+            except Exception as exc:
+                logger.warning("Не удалось сгенерировать превью сессии %s: %s", session_id, exc)
 
         webapp_url = f"{WEBAPP_BASE_URL}/editor?session_id={session_id}"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[

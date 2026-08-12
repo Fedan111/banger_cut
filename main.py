@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict
@@ -14,11 +15,11 @@ from pydantic import BaseModel
 import db
 from bot import bot, dp, process_queue_worker
 
-# Безопасный импорт процессора видео с логированием ошибок
+# Подробное логирование трассировки стека при ошибке импорта video_processor
 try:
     import video_processor
 except Exception as err:
-    logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать video_processor: %s", err)
+    logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать video_processor в main.py:\n%s", traceback.format_exc())
     video_processor = None
 
 logging.basicConfig(level=logging.INFO)
