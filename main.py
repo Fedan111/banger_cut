@@ -14,9 +14,11 @@ from pydantic import BaseModel
 import db
 from bot import bot, dp, process_queue_worker
 
+# Безопасный импорт процессора видео с логированием ошибок
 try:
     import video_processor
-except ImportError:
+except Exception as err:
+    logging.error("КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать video_processor: %s", err)
     video_processor = None
 
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +100,7 @@ async def get_session_api(session_id: str):
 
 @app.get("/api/session/{session_id}/video")
 async def get_session_video(session_id: str):
-    """Отдаёт видеофайл сессии для воспроизведения в Mini App."""
+    """Отдаёт видеофайл с запеченными субтитрами (TC Caps) для просмотра в Mini App."""
     try:
         session = db.get_session(session_id) if hasattr(db, "get_session") else None
         if not session and hasattr(db, "supabase"):
@@ -106,10 +108,26 @@ async def get_session_video(session_id: str):
             if res.data:
                 session = res.data[0]
 
-        if not session or not session.get("input_path"):
+        if not session:
             raise HTTPException(status_code=404, detail="Запись сессии не найдена")
 
-        video_path = Path(session["input_path"])
+        # Приоритетно берём готовый черновик/превью с примененным стилем TC Caps
+        video_file = (
+            session.get("preview_path")
+            or session.get("draft_path")
+            or session.get("styled_path")
+            or session.get("input_path")
+        )
+
+        if not video_file:
+            raise HTTPException(status_code=404, detail="Файл видео не указан в сессии")
+
+        video_path = Path(video_file)
+
+        # Если черновик по какому-то пути не найден, используем исходный файл
+        if not video_path.exists() and session.get("input_path"):
+            video_path = Path(session["input_path"])
+
         if not video_path.exists():
             raise HTTPException(status_code=404, detail="Файл видео не найден на сервере")
 
@@ -121,7 +139,11 @@ async def get_session_video(session_id: str):
 
 @app.post("/api/session/{session_id}")
 async def update_session_api(session_id: str, payload: UpdateSessionRequest, background_tasks: BackgroundTasks):
-    """Сохраняет отредактированный транскрипт в Supabase и передает рендеринг в BackgroundTasks."""
+    """Сохраняет отредактированный транскрипт и запускает рендеринг видео."""
+    if not video_processor or not hasattr(video_processor, "render_final_video_task"):
+        logging.error("Ошибка рендеринга: модуль video_processor недоступен")
+        raise HTTPException(status_code=500, detail="Модуль рендеринга видео недоступен на сервере")
+
     try:
         update_data = {
             "transcript": payload.words,
@@ -134,14 +156,10 @@ async def update_session_api(session_id: str, payload: UpdateSessionRequest, bac
         elif hasattr(db, "supabase"):
             db.supabase.table("sessions").update(update_data).eq("id", session_id).execute()
 
-        # Надежный запуск обработки видео в фоне через FastAPI BackgroundTasks
-        if video_processor and hasattr(video_processor, "render_final_video_task"):
-            background_tasks.add_task(video_processor.render_final_video_task, session_id)
-            logging.info("Фоновая задача рендеринга для сессии %s добавлена в очередь.", session_id)
-        else:
-            logging.warning("Модуль video_processor или функция render_final_video_task не найдены.")
+        background_tasks.add_task(video_processor.render_final_video_task, session_id)
+        logging.info("Фоновая задача рендеринга для сессии %s успешно добавлена.", session_id)
 
-        return {"status": "ok", "message": "Сессия успешно обновлена, запущен рендеринг"}
+        return {"status": "ok", "message": "Сессия обновлена, рендеринг запущен"}
     except Exception as e:
         logging.error("Ошибка при обновлении сессии %s: %s", session_id, e)
         raise HTTPException(status_code=500, detail=str(e))
