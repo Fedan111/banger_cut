@@ -183,10 +183,12 @@
         tg.ready();
 
         const urlParams = new URLSearchParams(window.location.search);
-        const sessionId = urlParams.get('session_id');
+        let rawSessionId = urlParams.get('session_id') || '';
+        // Безопасное извлечение clean ID без хэшей Telegram
+        const sessionId = rawSessionId.split('#')[0].split('?')[0];
 
         let wordsData = [];
-        let keepSegments = [];
+        let userSettings = {};
 
         async function loadSession() {
             if (!sessionId) {
@@ -198,21 +200,30 @@
                 const response = await fetch(`/api/session/${sessionId}`);
                 const data = await response.json();
 
-                if (!response.ok || data.status !== 'ok') {
+                if (!response.ok) {
                     throw new Error(data.detail || 'Не удалось загрузить данные сессии');
                 }
 
-                const session = data.session;
-                wordsData = session.transcript || [];
-                keepSegments = session.keep_segments || [];
+                // Прямой разбор структуры, отдаваемой server.py
+                wordsData = typeof data.transcript === 'string' 
+                    ? JSON.parse(data.transcript) 
+                    : (data.transcript || []);
+                
+                userSettings = data.user_settings || {};
 
+                // Каждому слову задаем дефолтный флаг активной видимости, если он отсутствует
                 wordsData.forEach(word => {
-                    word.active = isTimeInKeepSegments(word.start, word.end, keepSegments);
+                    if (word.active === undefined) {
+                        word.active = true;
+                    }
                 });
 
-                const videoSource = document.getElementById('video-source');
-                videoSource.src = `/api/session/${sessionId}/video`;
-                document.getElementById('video-player').load();
+                // Подставляем реальный путь к видеофайлу из ответа бэкенда
+                if (data.video_url) {
+                    const videoSource = document.getElementById('video-source');
+                    videoSource.src = data.video_url;
+                    document.getElementById('video-player').load();
+                }
 
                 renderWords();
                 setupMainButton();
@@ -223,11 +234,6 @@
             } catch (err) {
                 showError(err.message);
             }
-        }
-
-        function isTimeInKeepSegments(start, end, segments) {
-            if (!segments || segments.length === 0) return true;
-            return segments.some(seg => (start >= seg.start && start <= seg.end) || (end >= seg.start && end <= seg.end));
         }
 
         function renderWords() {
@@ -243,8 +249,8 @@
                 chip.className = `word-chip ${item.active ? '' : 'disabled'}`;
                 
                 const input = document.createElement('input');
-                input.value = item.word;
-                input.size = Math.max(item.word.length, 1);
+                input.value = item.word || '';
+                input.size = Math.max((item.word || '').length, 1);
                 
                 input.addEventListener('input', (e) => {
                     wordsData[index].word = e.target.value;
@@ -276,37 +282,27 @@
         async function saveChanges() {
             tg.MainButton.showProgress();
 
-            const activeWords = wordsData.filter(w => w.active);
-            const newKeepSegments = [];
-
-            if (activeWords.length > 0) {
-                let currentSeg = { start: activeWords[0].start, end: activeWords[0].end };
-                for (let i = 1; i < activeWords.length; i++) {
-                    const w = activeWords[i];
-                    if (w.start - currentSeg.end <= 0.4) {
-                        currentSeg.end = w.end;
-                    } else {
-                        newKeepSegments.push({ ...currentSeg });
-                        currentSeg = { start: w.start, end: w.end };
-                    }
-                }
-                newKeepSegments.push(currentSeg);
-            }
+            // Передаем транскрипт с обновленными словами и флагами активных слов
+            const payload = {
+                session_id: sessionId,
+                transcript: wordsData,
+                preset: userSettings.preset || "milo",
+                font_size: userSettings.font_size || "4.8cqh",
+                v_offset: parseFloat(userSettings.v_offset || 0.8),
+                h_align: userSettings.h_align || "center"
+            };
 
             try {
                 const response = await fetch(`/api/session/${sessionId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        words: wordsData,
-                        keep_segments: newKeepSegments
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const result = await response.json();
 
                 if (!response.ok || result.status !== 'ok') {
-                    throw new Error(result.detail || result.message || 'Ошибка сервера при сохранении');
+                    throw new Error(result.detail || 'Ошибка сервера при сохранении');
                 }
 
                 if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');

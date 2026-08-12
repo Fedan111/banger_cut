@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from aiogram.types import Update
 
@@ -16,6 +17,15 @@ import db
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Включаем CORS для корректной работы Telegram Mini App
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 WEB_DIR = Path(__file__).parent / "web"
 WEB_DIR.mkdir(exist_ok=True)
@@ -67,7 +77,10 @@ async def get_editor_page():
 
 @app.get("/api/session/{session_id}")
 async def get_session_data(session_id: str):
-    session = db.get_session(session_id)
+    # Очищаем ID от возможных хэшей и GET-параметров Telegram
+    clean_session_id = session_id.split("#")[0].split("?")[0]
+    
+    session = db.get_session(clean_session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
@@ -77,22 +90,31 @@ async def get_session_data(session_id: str):
     
     user_settings = db.get_user_settings(session["chat_id"])
     
+    # Безопасное приведение transcript к списку
+    transcript = session.get("transcript", [])
+    if isinstance(transcript, str):
+        try:
+            transcript = json.loads(transcript)
+        except Exception:
+            transcript = []
+            
     return {
         "session_id": session["id"],
         "video_url": video_url,
-        "transcript": session["transcript"],
+        "transcript": transcript,
         "user_settings": user_settings
     }
 
 
 async def _execute_render(session_id: str, data: RenderRequest):
-    session = db.get_session(session_id)
+    clean_session_id = session_id.split("#")[0].split("?")[0]
+    session = db.get_session(clean_session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    db.update_session_status(session_id, "rendering")
+    db.update_session_status(clean_session_id, "rendering")
     if data.transcript:
-        db.update_session_transcript(session_id, data.transcript)
+        db.update_session_transcript(clean_session_id, data.transcript)
 
     chat_id = session["chat_id"]
     session_dir = Path(session["session_dir"])
@@ -100,6 +122,12 @@ async def _execute_render(session_id: str, data: RenderRequest):
     keep_segments = session.get("keep_segments", [])
 
     transcript_data = data.transcript or session.get("transcript", [])
+    if isinstance(transcript_data, str):
+        try:
+            transcript_data = json.loads(transcript_data)
+        except Exception:
+            transcript_data = []
+
     updated_transcript_path = session_dir / "updated_transcript.json"
     updated_transcript_path.write_text(json.dumps(transcript_data, ensure_ascii=False), encoding="utf-8")
 
@@ -118,7 +146,7 @@ async def _execute_render(session_id: str, data: RenderRequest):
             keep_segments=keep_segments,
         )
 
-        db.update_session_status(session_id, "done")
+        db.update_session_status(clean_session_id, "done")
 
         from aiogram.types import FSInputFile
         await bot.send_video(
@@ -130,7 +158,7 @@ async def _execute_render(session_id: str, data: RenderRequest):
         return {"status": "ok"}
     except Exception as exc:
         logger.exception("Детальная ошибка во время рендеринга:")
-        db.update_session_status(session_id, "error")
+        db.update_session_status(clean_session_id, "error")
         raise HTTPException(status_code=500, detail=f"Ошибка рендеринга: {exc}")
 
 
